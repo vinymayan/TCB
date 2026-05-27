@@ -1,12 +1,14 @@
-
+﻿
 if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
   message(FATAL_ERROR "Missing COMMONLIB_SSE_FOLDER environment variable")
 endif()
 
-include(cmake/headerlist.cmake)
-include(cmake/sourcelist.cmake)
 include(cmake/lib/copyOutputs.cmake)
 include(cmake/lib/automaticGameFolderOutput.cmake)
+include(cmake/lib/autoCollectSources.cmake)
+
+add_src_folder(src)
+add_include_folder(include)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
@@ -14,8 +16,8 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 # If you use CMake features from higher versions, update this to match.
 cmake_minimum_required(VERSION 3.21)
 # Set your project name. This will be the name of your SKSE .dll file.
-set(AUTHOR_NAME "AUTHORNAME")
-set(PRODUCT_NAME "ModName")
+set(AUTHOR_NAME "Viny")
+set(PRODUCT_NAME "TriggerBehaviour")
 project(${PRODUCT_NAME} VERSION 0.1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

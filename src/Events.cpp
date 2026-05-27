@@ -1,13 +1,143 @@
-#include "Events.h"
+Ôªø#include "Events.h"
+#include "DelayedDispatcher.h"
 
 RE::TESIdleForm* anim = nullptr;
+
+namespace TimeStop {
+    // Estrutura para salvar o que cada ator congelou
+    struct FrozenData {
+        std::vector<RE::ActorHandle> actors;
+        std::vector<std::pair<RE::ObjectRefHandle, RE::NiPoint3>> projectiles;
+    };
+
+    std::unordered_map<RE::FormID, FrozenData> g_ActiveTimeStops;
+    std::shared_mutex g_timeStopMutex;
+
+    void Pause3DControllers(RE::NiAVObject* object, bool pause) {
+        if (!object) return;
+
+        auto controller = object->GetControllers();
+        while (controller) {
+            controller->frequency = pause ? 0.0f : 1.0f;
+            if (pause) {
+                controller->flags.reset(RE::NiTimeController::Flag::kActive);
+            }
+            else {
+                controller->flags.set(RE::NiTimeController::Flag::kActive);
+            }
+            controller = controller->next.get();
+        }
+
+        if (auto node = object->AsNode()) {
+            for (auto& child : node->GetChildren()) {
+                Pause3DControllers(child.get(), pause);
+            }
+        }
+    }
+
+    void SetActorFrozen(RE::Actor* target, bool frozen) {
+        if (!target) return;
+
+        if (frozen) {
+            target->EnableAI(false);
+            target->SetGraphVariableFloat("SpeedPlay", 0.0f);
+            if (auto root3D = target->Get3D()) {
+                Pause3DControllers(root3D, true);
+            }
+        }
+        else {
+            target->EnableAI(true);
+            target->SetGraphVariableFloat("SpeedPlay", 1.0f);
+            if (auto root3D = target->Get3D()) {
+                Pause3DControllers(root3D, false);
+            }
+        }
+    }
+
+    void StartTimeStop(RE::Actor* caster) {
+        if (!caster) return;
+
+        std::vector<RE::ActorHandle> affectedActors;
+        std::vector<std::pair<RE::ObjectRefHandle, RE::NiPoint3>> affectedProjectiles;
+
+        if (auto tes = RE::TES::GetSingleton(); tes) {
+            tes->ForEachReferenceInRange(caster, 1500.0f, [&](RE::TESObjectREFR* ref) {
+                if (!ref) return RE::BSContainer::ForEachResult::kContinue;
+
+                if (auto a = ref->As<RE::Actor>()) {
+                    // Verifica se n√£o √© o caster, n√£o est√° morto, e se s√£o hostis um ao outro (Aplica-se ao Player tamb√©m)
+                    if (a != caster && !a->IsDead() && !a->IsDisabled() && (a->IsHostileToActor(caster) || caster->IsHostileToActor(a))) {
+                        SetActorFrozen(a, true);
+                        affectedActors.push_back(a->GetHandle());
+                    }
+                }
+                else if (auto proj = ref->As<RE::Projectile>()) {
+                    RE::NiPoint3 currentVel = proj->GetProjectileRuntimeData().linearVelocity;
+                    affectedProjectiles.push_back({ proj->GetHandle(), currentVel });
+
+                    proj->GetProjectileRuntimeData().linearVelocity = RE::NiPoint3(0.0f, 0.0f, 0.0f);
+
+                    if (auto root3D = proj->Get3D()) {
+                        Pause3DControllers(root3D, true);
+                    }
+                }
+                return RE::BSContainer::ForEachResult::kContinue;
+                });
+        }
+
+        if (!affectedActors.empty() || !affectedProjectiles.empty()) {
+            std::unique_lock lock(g_timeStopMutex);
+            g_ActiveTimeStops[caster->GetFormID()] = { affectedActors, affectedProjectiles };
+        }
+    }
+
+    void StopTimeStop(RE::Actor* caster) {
+        if (!caster) return;
+
+        FrozenData data;
+        {
+            std::unique_lock lock(g_timeStopMutex);
+            auto it = g_ActiveTimeStops.find(caster->GetFormID());
+            if (it != g_ActiveTimeStops.end()) {
+                data = it->second;
+                g_ActiveTimeStops.erase(it); // Remove o registro
+            }
+            else {
+                return; // Nada foi congelado por esse ator
+            }
+        }
+
+        // Descongela Atores
+        for (auto& handle : data.actors) {
+            if (auto a = handle.get(); a) {
+                if (!a->IsDead() && !a->IsDisabled() && a->Is3DLoaded()) {
+                    SetActorFrozen(a.get(), false);
+                }
+            }
+        }
+
+        // Restaura Proj√©teis
+        for (auto& pair : data.projectiles) {
+            if (auto ref = pair.first.get(); ref) {
+                if (!ref->IsDisabled() && ref->Is3DLoaded()) {
+                    if (auto proj = ref->As<RE::Projectile>()) {
+                        proj->GetProjectileRuntimeData().linearVelocity = pair.second;
+                        if (auto root3D = proj->Get3D()) {
+                            Pause3DControllers(root3D, false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 float CalculateStaggerDirection(RE::Actor* attacker, RE::Actor* target) {
     if (!attacker || !target) {
         return 0.0f;
     }
 
-    // 1. Pegamos as posiÁıes X e Y
+    // 1. Pegamos as posi√ß√µes X e Y
     const auto attackerPos = attacker->GetPosition();
     const auto targetPos = target->GetPosition();
 
@@ -15,21 +145,21 @@ float CalculateStaggerDirection(RE::Actor* attacker, RE::Actor* target) {
     float dx = attackerPos.x - targetPos.x;
     float dy = attackerPos.y - targetPos.y;
 
-    // 3. Calculamos o ‚ngulo absoluto no mundo (em radianos, de -PI a +PI)
+    // 3. Calculamos o √¢ngulo absoluto no mundo (em radianos, de -PI a +PI)
     float angleToAttacker = std::atan2(dy, dx);
 
-    // 4. Pegamos o ‚ngulo que o Alvo est· olhando (Z rotation)
+    // 4. Pegamos o √¢ngulo que o Alvo est√° olhando (Z rotation)
     float targetAngle = target->data.angle.z;
 
-    // 5. SubtraÌmos para achar o ‚ngulo RELATIVO (onde o atacante est· na vis„o do alvo)
+    // 5. Subtra√≠mos para achar o √¢ngulo RELATIVO (onde o atacante est√° na vis√£o do alvo)
     float relativeAngle = angleToAttacker - targetAngle;
 
-    // 6. NormalizaÁ„o trigonomÈtrica
-    // O resultado pode estar fora de 0..2PI (ex: negativo), ent„o corrigimos.
+    // 6. Normaliza√ß√£o trigonom√©trica
+    // O resultado pode estar fora de 0..2PI (ex: negativo), ent√£o corrigimos.
     const float PI = 3.14159265358979323846f;
     const float TWO_PI = 2.0f * PI;
 
-    // Garante que o ‚ngulo esteja entre 0 e 2PI
+    // Garante que o √¢ngulo esteja entre 0 e 2PI
     while (relativeAngle < 0) {
         relativeAngle += TWO_PI;
     }
@@ -45,14 +175,14 @@ RE::TESIdleForm* GetIdleByFormID(RE::FormID a_formID, const std::string& a_plugi
     auto* dataHandler = RE::TESDataHandler::GetSingleton();
     RE::TESForm* lookupForm = dataHandler ? dataHandler->LookupForm(a_formID, a_pluginName) : nullptr;
     if (!lookupForm) {
-        SKSE::log::warn("N„o foi possÌvel encontrar o FormID 0x{:X} no plugin {}", a_formID, a_pluginName);
+        SKSE::log::warn("N√£o foi poss√≠vel encontrar o FormID 0x{:X} no plugin {}", a_formID, a_pluginName);
         return nullptr;
     }
-    // Verificamos se o tipo do formul·rio È IdleForm e fazemos o cast.
+    // Verificamos se o tipo do formul√°rio √© IdleForm e fazemos o cast.
     if (lookupForm->GetFormType() == RE::FormType::Idle) {
         return static_cast<RE::TESIdleForm*>(lookupForm);
     }
-    SKSE::log::warn("O FormID 0x{:X} n„o È um TESIdleForm.", a_formID);
+    SKSE::log::warn("O FormID 0x{:X} n√£o √© um TESIdleForm.", a_formID);
     return nullptr;
 }
 
@@ -62,9 +192,9 @@ void PlayIdleAnimationTarget(RE::Actor* a_actor, RE::TESIdleForm* a_idle, RE::Ac
         if (auto* processManager = a_actor->GetActorRuntimeData().currentProcess) {
             processManager->PlayIdle(a_actor, a_idle, a_target);
 
-            //SKSE::log::info("Tocando animaÁ„o idle FormID 0x{:X}", a_idle->GetFormID());
+            //SKSE::log::info("Tocando anima√ß√£o idle FormID 0x{:X}", a_idle->GetFormID());
         } else {
-            SKSE::log::error("N„o foi possÌvel obter o AIProcess (currentProcess) do ator.");
+            SKSE::log::error("N√£o foi poss√≠vel obter o AIProcess (currentProcess) do ator.");
         }
     }
 }
@@ -87,7 +217,7 @@ RE::BSEventNotifyControl Sink::HitEventHandler::ProcessEvent(const RE::TESHitEve
     if (!target || target->IsDead()) {
         return RE::BSEventNotifyControl::kContinue;
     }
-
+    
     bool PlayPaired = false;
     bool PlayStagger = false;
     bool PlayParry = false;
@@ -95,33 +225,7 @@ RE::BSEventNotifyControl Sink::HitEventHandler::ProcessEvent(const RE::TESHitEve
     float StaggerDirection = 0.0f;
     int nStagger = 0;
 	int nPaired = 0;
-    ParryType type = ParryTimerManager::GetParryType(target->GetFormID());
-    
-    if (type != ParryType::None) {
-        if (attacker == player || target == player) {
-            ApplySlowTime(g_SlowTimeMultiplier);
-            ResetTimeTask();
-        }
-        // Aplica os efeitos e seta as vari·veis no alvo
-        PlayParryEffects(target, type);
 
-        // Faz o ATACANTE entrar em stagger (quem bateu no escudo/arma)
-        if (attacker) {
-            attacker->SetGraphVariableFloat("staggerMagnitude", 1.0f); //
-            attacker->NotifyAnimationGraph("staggerStart"); //
-
-            // Opcional: Se for perfeito, o atacante fica mais tempo em stagger
-            if (type == ParryType::Perfect) {
-                attacker->SetGraphVariableFloat("staggerMagnitude", 2.0f); //
-            }
-        }
-
-        // Limpa a janela para evitar m˙ltiplos acionamentos no mesmo hit
-        ParryTimerManager::RemoveWindow(target->GetFormID());
-        return RE::BSEventNotifyControl::kContinue;
-    }
-    float damageTaken = target->GetTrackedDamage();
-	logger::info("Damage Taken: {}", damageTaken);
     attacker->GetGraphVariableBool("Paired_AnimationCMF", PlayPaired);
     attacker->GetGraphVariableBool("Stagger_AnimationCMF", PlayStagger);
     target->GetGraphVariableBool("Parry_AnimationCMF", PlayParry);
@@ -153,20 +257,7 @@ RE::BSEventNotifyControl Sink::HitEventHandler::ProcessEvent(const RE::TESHitEve
             attacker->SetGraphVariableBool("Stagger_AnimationCMF", false);
             //target->SetGraphVariableInt("nStagger_AnimationCMF", 0);
         }
-    }else if (PlayParry == true) {
-        if (target && !target->IsDead()) {
-            attacker->NotifyAnimationGraph("staggerStart");
-            if (attacker == player || target == player) {
-                ApplySlowTime(g_SlowTimeMultiplier);
-                ResetTimeTask();
-            }
-            float damageTaken = target->GetTrackedDamage();
-            // Aplica os efeitos e seta as vari·veis no alvo
-            PlayParryEffects(attacker, type);
-            target->SetGraphVariableBool("Parry_AnimationCMF", false);
-            //attacker->SetGraphVariableInt("nPaired_AnimationCMF", 0);
-        }
-	}
+    }
     
     return RE::BSEventNotifyControl::kContinue;
 }
@@ -179,7 +270,7 @@ RE::BSEventNotifyControl Sink::NpcCombatTracker::ProcessEvent(const RE::TESComba
 
     auto actor = a_event->actor.get();
     auto* npc = actor->As<RE::Actor>();
-    if (npc && npc != RE::PlayerCharacter::GetSingleton()) {  // Garante que È um ator v·lido
+    if (npc && npc != RE::PlayerCharacter::GetSingleton()) {  // Garante que √© um ator v√°lido
         switch (a_event->newState.get()) {
         case RE::ACTOR_COMBAT_STATE::kCombat:
             NpcCombatTracker::RegisterSink(npc);
@@ -200,7 +291,7 @@ void Sink::NpcCombatTracker::RegisterSink(RE::Actor* a_actor)
     if (g_trackedNPCs.find(a_actor->GetFormID()) == g_trackedNPCs.end()) {
         a_actor->AddAnimationGraphEventSink(&g_npcSink);
         g_trackedNPCs.insert(a_actor->GetFormID());
-        //SKSE::log::info("[NpcCombatTracker] ComeÁando a rastrear animaÁıes do ator {:08X}", a_actor->GetFormID());
+        //SKSE::log::info("[NpcCombatTracker] Come√ßando a rastrear anima√ß√µes do ator {:08X}", a_actor->GetFormID());
     }
 }
 
@@ -212,29 +303,29 @@ void Sink::NpcCombatTracker::UnregisterSink(RE::Actor* a_actor)
     if (g_trackedNPCs.find(a_actor->GetFormID()) != g_trackedNPCs.end()) {
         a_actor->RemoveAnimationGraphEventSink(&g_npcSink);
         g_trackedNPCs.erase(a_actor->GetFormID());
-        //SKSE::log::info("[NpcCombatTracker] Parando de rastrear animaÁıes do ator {:08X}", a_actor->GetFormID());
+        //SKSE::log::info("[NpcCombatTracker] Parando de rastrear anima√ß√µes do ator {:08X}", a_actor->GetFormID());
     }
 }
 
 void Sink::NpcCombatTracker::RegisterSinksForExistingCombatants()
 {
-    SKSE::log::info("[NpcCombatTracker] Verificando NPCs j· em combate apÛs carregar o jogo...");
+    SKSE::log::info("[NpcCombatTracker] Verificando NPCs j√° em combate ap√≥s carregar o jogo...");
 
     auto* processLists = RE::ProcessLists::GetSingleton();
     if (!processLists) {
-        SKSE::log::warn("[NpcCombatTracker] N„o foi possÌvel obter ProcessLists.");
+        SKSE::log::warn("[NpcCombatTracker] N√£o foi poss√≠vel obter ProcessLists.");
         return;
     }
 
-    // Itera sobre todos os atores que est„o "ativos" no jogo
+    // Itera sobre todos os atores que est√£o "ativos" no jogo
     for (auto& actorHandle : processLists->highActorHandles) {
         if (auto actor = actorHandle.get().get()) {
-            // A funÁ„o IsInCombat() nos diz se o ator j· est· em um estado de combate
+            // A fun√ß√£o IsInCombat() nos diz se o ator j√° est√° em um estado de combate
             if (!actor->IsPlayerRef()) {
                 if (actor->IsInCombat()) {
-                    SKSE::log::info("[NpcCombatTracker] Ator '{}' ({:08X}) j· est· em combate. Registrando sink...",
+                    SKSE::log::info("[NpcCombatTracker] Ator '{}' ({:08X}) j√° est√° em combate. Registrando sink...",
                         actor->GetName(), actor->GetFormID());
-                    // Usamos a mesma funÁ„o de registro que j· existe!
+                    // Usamos a mesma fun√ß√£o de registro que j√° existe!
                     RegisterSink(actor);
                 }
             }
@@ -242,7 +333,59 @@ void Sink::NpcCombatTracker::RegisterSinksForExistingCombatants()
         }
     }
 
-    SKSE::log::info("[NpcCombatTracker] VerificaÁ„o concluÌda.");
+    SKSE::log::info("[NpcCombatTracker] Verifica√ß√£o conclu√≠da.");
+}
+
+// -----------------------------------------------------------------------------
+// SISTEMA DE MAGNETISMO (EVENT-DRIVEN / SNAP)
+// -----------------------------------------------------------------------------
+namespace Magnetism {
+
+    void SnapToTarget(RE::Actor* a_actor) {
+        if (!a_actor || a_actor->IsDead() || a_actor->IsDisabled() || !a_actor->Is3DLoaded()) return;
+
+        // Pega o alvo atual de combate do ator
+        RE::ActorHandle targetHandle = a_actor->GetActorRuntimeData().currentCombatTarget;
+        auto target = targetHandle.get();
+
+        // Se n√£o tiver alvo em combate, cancela
+        if (!target || target->IsDead() || !a_actor->Is3DLoaded()) return;
+
+        // Pega as posi√ß√µes
+        auto actorPos = a_actor->GetPosition();
+        auto targetPos = target->GetPosition();
+
+        // Calcula a dire√ß√£o
+        float dx = targetPos.x - actorPos.x;
+        float dy = targetPos.y - actorPos.y;
+        float dz = targetPos.z - actorPos.z;
+
+        // Dist√¢ncia horizontal (hipotenusa de X e Y)
+        float distanceXY = std::sqrt(dx * dx + dy * dy);
+
+        // Evita divis√£o por zero ou proximidade extrema bizarra
+        if (distanceXY < 0.1f) {
+            return;
+        }
+
+        // 1. CALCULA O √ÇNGULO HORIZONTAL (Yaw - Esquerda/Direita)
+        float desiredYaw = std::atan2(dx, dy);
+
+        // 2. CALCULA O √ÇNGULO VERTICAL (Pitch - Cima/Baixo)
+        float desiredPitch = std::atan2(dz, distanceXY);
+
+        // --- PROTE√á√ÉO CONTRA CRASHES ---
+        if (std::isnan(desiredYaw) || std::isinf(desiredYaw) ||
+            std::isnan(desiredPitch) || std::isinf(desiredPitch)) {
+            SKSE::log::warn("[SnapToTarget] ALERTA: √Çngulo inv√°lido detectado! Rota√ß√£o cancelada.");
+            return;
+        }
+
+        SKSE::log::debug("[SnapToTarget] Snap ativado -> Yaw: {:.4f} | Pitch: {:.4f}", desiredYaw, desiredPitch);
+        a_actor->GetActorRuntimeData().boolBits.reset(RE::Actor::BOOL_BITS::kHeadingFixed);
+        a_actor->SetHeading(desiredYaw);   // Alinha o corpo horizontalmente
+        a_actor->SetLooking(desiredPitch); // Alinha o olhar/mira verticalmente
+    }
 }
 
 RE::BSEventNotifyControl Sink::NpcCycleSink::ProcessEvent(const RE::BSAnimationGraphEvent* a_event, RE::BSTEventSource<RE::BSAnimationGraphEvent>*)
@@ -255,105 +398,93 @@ RE::BSEventNotifyControl Sink::NpcCycleSink::ProcessEvent(const RE::BSAnimationG
         auto npc = const_cast<RE::Actor*>(actor);
         const RE::FormID formID = actor->GetFormID();
         const std::string_view eventName = a_event->tag;
-        //logger::info("[NPC Anim Event] Ator: '{}' ({:08X}), Evento: '{}'", actor->GetName(), actor->GetFormID(),eventName);
-		auto player = RE::PlayerCharacter::GetSingleton();
-        if (eventName == "blockStartOut") {
-            npc->SetGraphVariableBool("Parry_AnimationCMF", true);
-            ParryTimerManager::StartWindow(formID);
-            logger::info("Janela de Parry iniciada para: {:08X}", formID);
-            player->SetGraphVariableBool("Paired_AnimationCMF", true);
-
+        if (eventName == "IframeStartCMF") {
+            npc->SetGraphVariableBool("hasIframeCMF", true);
         }
-        
+        else if (eventName == "IframeEndCMF") {
+            npc->SetGraphVariableBool("hasIframeCMF", false);
+        }
+        else if (eventName == "StopTimeStartCMF") {
+            TimeStop::StartTimeStop(npc);
+        }
+        else if (eventName == "StopTimeEndCMF") {
+            TimeStop::StopTimeStop(npc);
+        }
+        else if (eventName == "SnapToTargetCMF") {
+            Magnetism::SnapToTarget(npc);
+        }
+
     }
     return RE::BSEventNotifyControl::kContinue;
 }
 
-void Sink::ParryTimerManager::StartWindow(RE::FormID a_formID) {
-    std::unique_lock lock(g_parryMutex);
-    g_parryWindows[a_formID] = std::chrono::steady_clock::now();
-}
-
-Sink::ParryType Sink::ParryTimerManager::GetParryType(RE::FormID a_formID) {
-    std::shared_lock lock(g_parryMutex);
-    auto it = g_parryWindows.find(a_formID);
-
-    if (it != g_parryWindows.end()) {
-        auto now = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second).count();
-
-        if (duration <= g_PerfectParryMS) {
-            return ParryType::Perfect;
-        }
-        else if (duration <= g_NormalParryMS) {
-            return ParryType::Normal;
-        }
-    }
-    return ParryType::None;
-}
-
-
-
-void Sink::ParryTimerManager::RemoveWindow(RE::FormID a_formID) {
-    std::unique_lock lock(g_parryMutex);
-    g_parryWindows.erase(a_formID);
-}
-
-RE::TESEffectShader* Sink::GetEffectShaderByFormID(RE::FormID a_formID, const std::string& a_pluginName) {
-    auto* dataHandler = RE::TESDataHandler::GetSingleton();
-    auto* lookupForm = dataHandler ? dataHandler->LookupForm(a_formID, a_pluginName) : nullptr;
-
-    // 0x55 na sua lista È EffectShader (TESEffectShader)
-    if (lookupForm && lookupForm->GetFormType() == RE::FormType::EffectShader) {
-        return static_cast<RE::TESEffectShader*>(lookupForm);
-    }
-
-    SKSE::log::warn("N„o foi possÌvel encontrar EffectShader 0x{:X} no plugin {}", a_formID, a_pluginName);
-    return nullptr;
-}
 
 void Sink::ApplySlowTime(float a_multiplier)
 {
     auto* timer = RE::BSTimer::GetSingleton();
     if (timer) {
-        // Usamos a funÁ„o fornecida: o segundo par‚metro (bool) 
-        // geralmente define se a mudanÁa È imediata
+        // Usamos a fun√ß√£o fornecida: o segundo par√¢metro (bool) 
+        // geralmente define se a mudan√ßa √© imediata
         timer->SetGlobalTimeMultiplier(a_multiplier, true);
     }
 
 }
-
-void Sink::ResetTimeTask()
+void ScheduleSinkRegistration(RE::Actor* actor, int attempts)
 {
-    std::thread([]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(g_SlowTimeDurationMS));
+    if (attempts > 20) {
+        SKSE::log::critical("[Actor3DLoadEventHandler] Desistindo ap√≥s {} tentativas para o ator {:08X}.", attempts, actor->GetFormID());
+        return;
+    }
 
-        // Retorna para a thread principal do SKSE para evitar instabilidade
-        SKSE::GetTaskInterface()->AddTask([]() {
-            auto* timer = RE::BSTimer::GetSingleton();
-            if (timer) {
-                timer->SetGlobalTimeMultiplier(1.0f, true);
+    auto actorHandle = actor->CreateRefHandle();
+
+    Utils::DelayedDispatcher::Get().PostDelayed(std::chrono::milliseconds(100), [actorHandle, attempts]() {
+        SKSE::GetTaskInterface()->AddTask([actorHandle, attempts]() {
+            if (!actorHandle) return;
+            if (!actorHandle.get()) return;
+
+            auto actor = actorHandle.get();
+
+            RE::BSTSmartPointer<RE::BSAnimationGraphManager> graphManager;
+            actor->GetAnimationGraphManager(graphManager);
+
+            if (graphManager) {
+
+
+                if (actor->IsPlayerRef()) {
+                    actor->RemoveAnimationGraphEventSink(Sink::NpcCycleSink::GetSingleton());
+                    if (actor->AddAnimationGraphEventSink(Sink::NpcCycleSink::GetSingleton())) {
+                    }
+
+                }
+                else {
+                    Sink::NpcCombatTracker::UnregisterSink(actor.get());
+                    Sink::NpcCombatTracker::RegisterSink(actor.get());
+                }
+            }
+            else {
+                // Graph ainda nulo, tenta de novo
+                ScheduleSinkRegistration(actor.get(), attempts + 1);
             }
             });
-        }).detach();
-
+        });
 }
-
-void Sink::PlayParryEffects(RE::Actor* a_target, ParryType a_type) {
-    if (!a_target) return;
-
-    if (a_type == ParryType::Perfect) {
-        // 1. Vari·vel para o Behavior (NPC ou Player)
-        a_target->SetGraphVariableBool("PerfectParry_AnimationCMF", true); //
-
-        // 2. Som de Parry Perfeito (ex: um "tink" mais agudo ou eco)
-        RE::PlaySound("WPNMagicalWeaponImpactMetal");
-        logger::info("PARRY PERFEITO executado por: {:08X}", a_target->GetFormID());
-
+RE::BSEventNotifyControl Sink::PC3DLoadEventHandler::ProcessEvent(const RE::TESObjectLoadedEvent* a_event, RE::BSTEventSource<RE::TESObjectLoadedEvent>*)
+{
+    if (!a_event || !a_event->loaded) {
+        return RE::BSEventNotifyControl::kContinue;
     }
-    else if (a_type == ParryType::Normal) {
-        auto* parryVisualEffect = GetEffectShaderByFormID(0x802, "Trigger Combat Behaviour.esp");
-        a_target->ApplyEffectShader(parryVisualEffect, 10.5f, nullptr, false, false);
-        logger::info("Efeito visual de Parry aplicado em: {}", a_target->GetName());
+
+    // Em vez de pegar o Player Singleton, buscamos o formul√°rio pelo ID do evento
+    auto* form = RE::TESForm::LookupByID(a_event->formID);
+    if (!form) return RE::BSEventNotifyControl::kContinue;
+
+    // Tentamos converter para Ator. Se n√£o for ator (ex: uma parede), ignoramos.
+    auto* actor = form->As<RE::Actor>();
+
+    if (actor) {
+        ScheduleSinkRegistration(actor, 0);
     }
+
+    return RE::BSEventNotifyControl::kContinue;
 }

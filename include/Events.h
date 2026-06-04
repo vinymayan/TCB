@@ -1,12 +1,14 @@
 ﻿#pragma once
 #include <shared_mutex>
-#include <chrono> // Novo: para controle de tempo
-#include <unordered_map> // Novo: para mapear atores e tempos
+#include <chrono> 
+#include <unordered_map> 
+#include <unordered_set>
+#include "TrueDirectionalMovementAPI.h"
 
 extern const std::string dawn;
 extern const std::string sky;
 extern RE::TESIdleForm* anim;
-
+extern TDM_API::IVTDM3* tdmAPI;
 RE::TESIdleForm* GetIdleByFormID(RE::FormID a_formID, const std::string& a_pluginName);
 
 namespace Sink {

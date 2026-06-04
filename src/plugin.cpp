@@ -2,11 +2,22 @@
 #include "Events.h"
 #include "Hooks.h"
 #include "Settings.h"
+#include "TrueDirectionalMovementAPI.h"
 
 const std::string dawn = "Dawnguard.esm";
 namespace Hook_Precision { void Initialize(); }
+TDM_API::IVTDM3* tdmAPI = nullptr;
 
 void OnMessage(SKSE::MessagingInterface::Message* message) {
+    if (message->type == SKSE::MessagingInterface::kPostLoad) {
+        tdmAPI = static_cast<TDM_API::IVTDM3*>(TDM_API::RequestPluginAPI(TDM_API::InterfaceVersion::V3));
+        if (tdmAPI) {
+            logger::info("True Directional Movement API (V3) carregada com sucesso!");
+        }
+        else {
+            logger::warn("True Directional Movement nao foi encontrado ou falhou ao carregar.");
+        }
+    }
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
         anim = GetIdleByFormID(0x0E6A8, dawn);
         Hook_Precision::Initialize();
@@ -26,6 +37,7 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
             player->SetGraphVariableBool("isUnblockableHit", false);
             player->SetGraphVariableBool("isParryingCMF", false);
             player->SetGraphVariableBool("isUndodgeableHit", false);
+            player->SetGraphVariableBool("PairedAllCMF", false);
         }
         if (auto processLists = RE::ProcessLists::GetSingleton()) {
             for (auto& actorHandle : processLists->highActorHandles) {
@@ -39,10 +51,10 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
                     actor->SetGraphVariableBool("isUnblockableHit", false);
                     actor->SetGraphVariableBool("isParryingCMF", false);
                     actor->SetGraphVariableBool("isUndodgeableHit", false);
+                    actor->SetGraphVariableBool("PairedAllCMF", false);
                 }
             }
         }
-        Sink::NpcCombatTracker::RegisterSink(player);
         Sink::NpcCombatTracker::RegisterSinksForExistingCombatants();
     }
 }

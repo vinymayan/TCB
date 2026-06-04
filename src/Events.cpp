@@ -1,6 +1,7 @@
 ﻿#include "Events.h"
 #include "DelayedDispatcher.h"
 
+
 RE::TESIdleForm* anim = nullptr;
 
 namespace TimeStop {
@@ -219,6 +220,7 @@ RE::BSEventNotifyControl Sink::HitEventHandler::ProcessEvent(const RE::TESHitEve
     }
     
     bool PlayPaired = false;
+    bool PlayPairedAll = false;
     bool PlayStagger = false;
     bool PlayParry = false;
     float StaggerAmount = 1.0f;
@@ -227,6 +229,7 @@ RE::BSEventNotifyControl Sink::HitEventHandler::ProcessEvent(const RE::TESHitEve
 	int nPaired = 0;
 
     attacker->GetGraphVariableBool("Paired_AnimationCMF", PlayPaired);
+    attacker->GetGraphVariableBool("PairedAllCMF", PlayPairedAll);
     attacker->GetGraphVariableBool("Stagger_AnimationCMF", PlayStagger);
     target->GetGraphVariableBool("Parry_AnimationCMF", PlayParry);
 
@@ -238,11 +241,21 @@ RE::BSEventNotifyControl Sink::HitEventHandler::ProcessEvent(const RE::TESHitEve
 
     if (PlayPaired == true) {
         if (target && !target->IsDead() && target->IsHumanoid()) {
+            if (target == player || attacker == player) {
+                if (tdmAPI && tdmAPI->GetTargetLockState()) {
+                    auto myPluginHandle = SKSE::GetPluginHandle();
+
+                    // Força a desativação temporária (limpa o lock-on instantaneamente)
+                    tdmAPI->RequestDisableDirectionalMovement(myPluginHandle);
+                    // Libera logo em seguida para que o movimento direcional volte a funcionar normalmente
+                    tdmAPI->ReleaseDisableDirectionalMovement(myPluginHandle);
+                }
+            }
             attacker->NotifyAnimationGraph("MCO_EndAnimation");
             target->NotifyAnimationGraph("MCO_EndAnimation");
             PlayIdleAnimationTarget(attacker, anim, target);
-            //logger::info("Playing paired animation and closed the window");
             attacker->SetGraphVariableBool("Paired_AnimationCMF", false);
+            attacker->SetGraphVariableBool("PairedAllCMF", false);
             //attacker->SetGraphVariableInt("nPaired_AnimationCMF", 0);
         }
     }
@@ -251,11 +264,26 @@ RE::BSEventNotifyControl Sink::HitEventHandler::ProcessEvent(const RE::TESHitEve
             float direction = CalculateStaggerDirection(attacker, target);
             target->SetGraphVariableFloat("staggerMagnitude", StaggerAmount);
             target->SetGraphVariableFloat("staggerDirection", direction);
-            //PlayIdleAnimationTarget(target, stagger, target);
             target->NotifyAnimationGraph("staggerStart");
-
             attacker->SetGraphVariableBool("Stagger_AnimationCMF", false);
-            //target->SetGraphVariableInt("nStagger_AnimationCMF", 0);
+        }
+    }else if (PlayPairedAll == true) {
+        if (target && !target->IsDead()) {
+            if (target == player || attacker == player) {
+                if (tdmAPI && tdmAPI->GetTargetLockState()) {
+                    auto myPluginHandle = SKSE::GetPluginHandle();
+
+                    // Força a desativação temporária (limpa o lock-on instantaneamente)
+                    tdmAPI->RequestDisableDirectionalMovement(myPluginHandle);
+                    // Libera logo em seguida para que o movimento direcional volte a funcionar normalmente
+                    tdmAPI->ReleaseDisableDirectionalMovement(myPluginHandle);
+                }
+			}
+            attacker->NotifyAnimationGraph("MCO_EndAnimation");
+            target->NotifyAnimationGraph("MCO_EndAnimation");
+            PlayIdleAnimationTarget(attacker, anim, target);
+            attacker->SetGraphVariableBool("PairedAllCMF", false);
+            attacker->SetGraphVariableBool("Paired_AnimationCMF", false);
         }
     }
     
@@ -297,7 +325,7 @@ void Sink::NpcCombatTracker::RegisterSink(RE::Actor* a_actor)
 
 void Sink::NpcCombatTracker::UnregisterSink(RE::Actor* a_actor)
 {
-    if (!a_actor || a_actor->IsPlayerRef()) return;
+    if (!a_actor) return;
 
     std::unique_lock lock(g_mutex);
     if (g_trackedNPCs.find(a_actor->GetFormID()) != g_trackedNPCs.end()) {
@@ -317,15 +345,10 @@ void Sink::NpcCombatTracker::RegisterSinksForExistingCombatants()
         return;
     }
 
-    // Itera sobre todos os atores que estão "ativos" no jogo
     for (auto& actorHandle : processLists->highActorHandles) {
         if (auto actor = actorHandle.get().get()) {
-            // A função IsInCombat() nos diz se o ator já está em um estado de combate
             if (!actor->IsPlayerRef()) {
                 if (actor->IsInCombat()) {
-                    SKSE::log::info("[NpcCombatTracker] Ator '{}' ({:08X}) já está em combate. Registrando sink...",
-                        actor->GetName(), actor->GetFormID());
-                    // Usamos a mesma função de registro que já existe!
                     RegisterSink(actor);
                 }
             }
@@ -413,6 +436,39 @@ RE::BSEventNotifyControl Sink::NpcCycleSink::ProcessEvent(const RE::BSAnimationG
         else if (eventName == "SnapToTargetCMF") {
             Magnetism::SnapToTarget(npc);
         }
+        else if (eventName == "ParriedStartCMF") {
+            npc->SetGraphVariableBool("PairedAllCMF", true);
+        }
+        else if (eventName == "ParriedEndCMF") {
+            npc->SetGraphVariableBool("PairedAllCMF", false);
+        }
+        else if (eventName == "attackStop" || eventName == "attackStart" || eventName == "CastOKStop" ||
+            eventName == "attackPowerStartRight" ||
+            eventName == "attackPowerStartInPlace" ||
+            eventName == "attackPowerStartForwardH2HRightHand" ||
+            eventName == "attackPowerStartBackward" ||
+            eventName == "attackPowerStartLeft" ||
+            eventName == "PowerAttack_Start_end" ||
+            eventName == "bashPowerStart" ||
+            eventName == "PowerAttackStop" ||
+            eventName == "attackPowerStartInPlaceLeftHand" ||
+            eventName == "attackPowerStartForwardLeftHand" ||
+            eventName == "attackPowerStartDualWield" ||
+            eventName == "attackPowerStartRightLeftHand" ||
+            eventName == "attackPowerStartLeftLeftHand" ||
+            eventName == "attackPowerStartBackLeftHand" ||
+            eventName == "attackPowerStarth2HCombo" ||
+            eventName == "attackPowerStartForwardH2HLeftHand" ||
+            eventName == "attackPowerStartForward" ||
+            eventName == "attackPowerStart_2HMSprint" ||
+            eventName == "attackPowerStart_Sprint" ||
+            eventName == "attackPowerStart_2HWSprint" ||
+            eventName == "attackPowerStart_SprintLeftHand" ||
+            eventName == "blockStart" || eventName == "attackStartDualWield") {
+
+            npc->SetGraphVariableBool("IsPowerAttackingCMF", npc->IsPowerAttacking());
+        }
+
 
     }
     return RE::BSEventNotifyControl::kContinue;
@@ -449,18 +505,8 @@ void ScheduleSinkRegistration(RE::Actor* actor, int attempts)
             actor->GetAnimationGraphManager(graphManager);
 
             if (graphManager) {
-
-
-                if (actor->IsPlayerRef()) {
-                    actor->RemoveAnimationGraphEventSink(Sink::NpcCycleSink::GetSingleton());
-                    if (actor->AddAnimationGraphEventSink(Sink::NpcCycleSink::GetSingleton())) {
-                    }
-
-                }
-                else {
                     Sink::NpcCombatTracker::UnregisterSink(actor.get());
                     Sink::NpcCombatTracker::RegisterSink(actor.get());
-                }
             }
             else {
                 // Graph ainda nulo, tenta de novo

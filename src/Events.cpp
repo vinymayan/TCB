@@ -436,10 +436,10 @@ RE::BSEventNotifyControl Sink::NpcCycleSink::ProcessEvent(const RE::BSAnimationG
         else if (eventName == "SnapToTargetCMF") {
             Magnetism::SnapToTarget(npc);
         }
-        else if (eventName == "ParriedStartCMF") {
+        else if (eventName == "PariedStartCMF") {
             npc->SetGraphVariableBool("PairedAllCMF", true);
         }
-        else if (eventName == "ParriedEndCMF") {
+        else if (eventName == "PariedEndCMF") {
             npc->SetGraphVariableBool("PairedAllCMF", false);
         }
         else if (eventName == "attackStop" || eventName == "attackStart" || eventName == "CastOKStop" ||

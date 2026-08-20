@@ -21,6 +21,8 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
         anim = GetIdleByFormID(0x0E6A8, dawn);
         Hook_Precision::Initialize();
+		Hook_OnMeleeHit::install();
+		Hook_OnProjectileCollision::install();
     }
     if (message->type == SKSE::MessagingInterface::kNewGame || message->type == SKSE::MessagingInterface::kPostLoadGame) {
         RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink<RE::TESHitEvent>(Sink::HitEventHandler::GetSingleton());

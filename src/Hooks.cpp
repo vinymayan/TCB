@@ -9,16 +9,11 @@ void Hook_OnMeleeHit::processHit(RE::Actor* victim, RE::HitData& hitData)
 		return;
 	}
 
-	auto aggressor = hitData.aggressor.get().get();
-
-	if (!aggressor) {
-		_ProcessHit(victim, hitData);
-		return;
-	}
 	bool hasIframe = false;
 	victim->GetGraphVariableBool("hasIframeCMF", hasIframe);
 
 	if (hasIframe) {
+		hitData.totalDamage = 0.0f;
 		hitData.physicalDamage = 0.0f;
 		hitData.stagger = 0;
 		return;
@@ -38,9 +33,7 @@ namespace Hook_Precision
 		}
 
 		auto victim = const_cast<RE::TESObjectREFR*>(a_hitData.target)->As<RE::Actor>();
-		auto aggressor = a_hitData.attacker;
-
-		if (!victim || !aggressor || !victim->IsBlocking()) {
+		if (!victim) {
 			return ret;
 		}
 

@@ -52,3 +52,20 @@ private:
     static inline REL::Relocation<decltype(OnArrowCollision)> _arrowCollission;
     static inline REL::Relocation<decltype(OnMissileCollision)> _missileCollission;
 };
+
+class Hook_AttackTracking
+{
+public:
+    static void install();
+
+private:
+    static void UpdateCharacter(RE::Actor* a_actor, float a_deltaTime);
+    static void UpdatePlayerCharacter(RE::Actor* a_actor, float a_deltaTime);
+    static void GetMovementRotation(RE::ActorState* a_actorState, RE::NiPoint3& a_rotation);
+    static void GetPlayerMovementRotation(RE::ActorState* a_actorState, RE::NiPoint3& a_rotation);
+
+    static inline REL::Relocation<decltype(UpdateCharacter)> _UpdateCharacter;
+    static inline REL::Relocation<decltype(UpdatePlayerCharacter)> _UpdatePlayerCharacter;
+    static inline REL::Relocation<decltype(GetMovementRotation)> _GetMovementRotation;
+    static inline REL::Relocation<decltype(GetPlayerMovementRotation)> _GetPlayerMovementRotation;
+};

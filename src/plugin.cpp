@@ -1,4 +1,5 @@
 ﻿#include "logger.h"
+#include "AttackTracking.h"
 #include "Events.h"
 #include "Hooks.h"
 #include "Settings.h"
@@ -8,8 +9,23 @@ const std::string dawn = "Dawnguard.esm";
 namespace Hook_Precision { void Initialize(); }
 TDM_API::IVTDM3* tdmAPI = nullptr;
 
+void PayloadInterpreterMessageListener(SKSE::MessagingInterface::Message* message) {
+    if (!message || !message->sender || std::string_view(message->sender) != "PayloadInterpreter") {
+        return;
+    }
+
+    AttackTracking::RegisterPayloadHandlers(static_cast<payloadinterpreter::API::Message*>(message->data));
+}
+
 void OnMessage(SKSE::MessagingInterface::Message* message) {
     if (message->type == SKSE::MessagingInterface::kPostLoad) {
+        if (SKSE::GetMessagingInterface()->RegisterListener("PayloadInterpreter", PayloadInterpreterMessageListener)) {
+            logger::info("Listener do Payload Interpreter registrado com sucesso.");
+        }
+        else {
+            logger::warn("Payload Interpreter nao encontrado; payloads TrackTCB/MagnetismTCB ficarao indisponiveis.");
+        }
+
         tdmAPI = static_cast<TDM_API::IVTDM3*>(TDM_API::RequestPluginAPI(TDM_API::InterfaceVersion::V3));
         if (tdmAPI) {
             logger::info("True Directional Movement API (V3) carregada com sucesso!");
@@ -23,8 +39,13 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         Hook_Precision::Initialize();
 		Hook_OnMeleeHit::install();
 		Hook_OnProjectileCollision::install();
+		Hook_AttackTracking::install();
+    }
+    if (message->type == SKSE::MessagingInterface::kPreLoadGame) {
+        AttackTracking::Manager::GetSingleton()->Clear();
     }
     if (message->type == SKSE::MessagingInterface::kNewGame || message->type == SKSE::MessagingInterface::kPostLoadGame) {
+        AttackTracking::Manager::GetSingleton()->Clear();
         RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink<RE::TESHitEvent>(Sink::HitEventHandler::GetSingleton());
         RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(Sink::NpcCombatTracker::GetSingleton());
         auto player = RE::PlayerCharacter::GetSingleton();

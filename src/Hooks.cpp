@@ -1,4 +1,5 @@
 ﻿#include "Hooks.h"
+#include "AttackTracking.h"
 #include "Settings.h"
 #include "PrecisionAPI.h"
 
@@ -129,3 +130,51 @@ void Hook_OnProjectileCollision::OnMissileCollision(RE::Projectile* a_this, RE::
 	_missileCollission(a_this, a_AllCdPointCollector);
 }
 
+void Hook_AttackTracking::install()
+{
+    static bool installed = false;
+    if (installed) {
+        return;
+    }
+    installed = true;
+
+    REL::Relocation<std::uintptr_t> characterVtable{ RE::VTABLE_Character[0] };
+    _UpdateCharacter = characterVtable.write_vfunc(0xAD, UpdateCharacter);
+
+    REL::Relocation<std::uintptr_t> playerCharacterVtable{ RE::VTABLE_PlayerCharacter[0] };
+    _UpdatePlayerCharacter = playerCharacterVtable.write_vfunc(0xAD, UpdatePlayerCharacter);
+
+    // ActorState is a secondary base of Character. This is the same vtable slot
+    // used by TDM to adjust the movement rotation returned by the engine.
+    REL::Relocation<std::uintptr_t> characterActorStateVtable{ RE::VTABLE_Character[6] };
+    _GetMovementRotation = characterActorStateVtable.write_vfunc(0x4, GetMovementRotation);
+
+    REL::Relocation<std::uintptr_t> playerActorStateVtable{ RE::VTABLE_PlayerCharacter[6] };
+    _GetPlayerMovementRotation = playerActorStateVtable.write_vfunc(0x4, GetPlayerMovementRotation);
+
+    SKSE::log::info("[AttackTracking] Hooks de Character e PlayerCharacter instalados.");
+}
+
+void Hook_AttackTracking::UpdateCharacter(RE::Actor* a_actor, float a_deltaTime)
+{
+    _UpdateCharacter(a_actor, a_deltaTime);
+    AttackTracking::Manager::GetSingleton()->Update(a_actor, a_deltaTime);
+}
+
+void Hook_AttackTracking::UpdatePlayerCharacter(RE::Actor* a_actor, float a_deltaTime)
+{
+    _UpdatePlayerCharacter(a_actor, a_deltaTime);
+    AttackTracking::Manager::GetSingleton()->Update(a_actor, a_deltaTime);
+}
+
+void Hook_AttackTracking::GetMovementRotation(RE::ActorState* a_actorState, RE::NiPoint3& a_rotation)
+{
+    _GetMovementRotation(a_actorState, a_rotation);
+    AttackTracking::Manager::GetSingleton()->ApplyRootMotionYawCorrection(a_actorState, a_rotation);
+}
+
+void Hook_AttackTracking::GetPlayerMovementRotation(RE::ActorState* a_actorState, RE::NiPoint3& a_rotation)
+{
+    _GetPlayerMovementRotation(a_actorState, a_rotation);
+    AttackTracking::Manager::GetSingleton()->ApplyRootMotionYawCorrection(a_actorState, a_rotation);
+}

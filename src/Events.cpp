@@ -1,4 +1,5 @@
 ﻿#include "Events.h"
+#include "AttackTracking.h"
 #include "DelayedDispatcher.h"
 
 
@@ -327,6 +328,8 @@ void Sink::NpcCombatTracker::UnregisterSink(RE::Actor* a_actor)
 {
     if (!a_actor) return;
 
+    AttackTracking::Manager::GetSingleton()->End(a_actor);
+
     std::unique_lock lock(g_mutex);
     if (g_trackedNPCs.find(a_actor->GetFormID()) != g_trackedNPCs.end()) {
         a_actor->RemoveAnimationGraphEventSink(&g_npcSink);
@@ -421,6 +424,10 @@ RE::BSEventNotifyControl Sink::NpcCycleSink::ProcessEvent(const RE::BSAnimationG
         auto npc = const_cast<RE::Actor*>(actor);
         const RE::FormID formID = actor->GetFormID();
         const std::string_view eventName = a_event->tag;
+        if (eventName == "attackStop" || eventName == "PowerAttackStop" || eventName == "MCO_EndAnimation" ||
+            eventName == "MCO_AttackEnd" || eventName == "BF_DodgeStop" || eventName == "DF_DodgeStop") {
+            AttackTracking::Manager::GetSingleton()->End(npc);
+        }
         if (eventName == "IframeStartCMF") {
             npc->SetGraphVariableBool("hasIframeCMF", true);
         }
